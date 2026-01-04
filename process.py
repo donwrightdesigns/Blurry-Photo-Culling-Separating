@@ -169,13 +169,14 @@ def collection_for_score(score, blurry):
 
 
 def main():
-    args = parse_args()
+    try:
+        args = parse_args()
 
-    logging.basicConfig(
-        format="%(asctime)s : %(levelname)s : %(module)s : %(message)s",
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        stream=sys.stdout,
-    )
+        logging.basicConfig(
+            format="%(asctime)s : %(levelname)s : %(module)s : %(message)s",
+            level=logging.DEBUG if args.verbose else logging.INFO,
+            stream=sys.stdout,
+        )
 
     enable_comp = args.all_metrics or args.composition
     enable_light = args.all_metrics or args.lighting
@@ -359,6 +360,12 @@ def main():
         logging.info(f"Total blurry images moved: {moved_count}")
         if error_moving_count > 0:
             logging.warning(f"Errors encountered while moving images: {error_moving_count}")
+
+    except Exception as e:
+        logging.error(f"Fatal error in process.py: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        sys.exit(1)
 
 
 if __name__ == "__main__":

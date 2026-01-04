@@ -1,0 +1,1 @@
+2026-01-01 18:14:32 | mode=settings | total=273 | analyzed=273 | status=ERROR rc=1

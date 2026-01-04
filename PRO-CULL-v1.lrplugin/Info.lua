@@ -1,7 +1,7 @@
 return {
     LrSdkVersion = 12.0,
     LrToolkitIdentifier = 'com.dwd.procull',
-    LrPluginName = 'PRO-CULL v1',
+    LrPluginName = 'PRO-CULL v1 (BETA)',
     LrLibraryMenuItems = {
         {
             title = 'PRO-CULL with Settings...',
