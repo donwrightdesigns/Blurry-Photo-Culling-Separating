@@ -102,10 +102,17 @@ class BlurDetectorGUI(tk.Tk):
         self.create_widgets()
 
     def show_beta_info(self):
+        """Explain the 0-100 scores and how to read the table."""
         text = (
             "PRO-CULL assigns each photo a 0-100 technical score. Higher numbers "
             "generally mean sharper, cleaner, better-exposed files.\n\n"
-            "Rough guide (tweak to taste):\n"
+            "Metric columns (0-100, higher is better):\n"
+            "  Blur: 0 = very soft / motion-blurred, 100 = tack sharp\n"
+            "  Comp: 0 = poor framing, 100 = strong rule-of-thirds / balance\n"
+            "  Light: 0 = very difficult exposure, 100 = clean exposure & color\n"
+            "  Noise: 0 = very noisy, 100 = very clean\n\n"
+            "Overall Quality (Q column) is a weighted mix of these metrics.\n\n"
+            "Rough guide for Quality (tweak to taste):\n"
             "  0-30: Often rejects (heavy blur or major issues)\n"
             "  30-65: On the fence - worth a closer look\n"
             "  65-80: Solid keepers for most jobs\n"
@@ -329,8 +336,16 @@ class BlurDetectorGUI(tk.Tk):
                             "noise": 0.10,
                             "exposure": 0.20,
                         }
-                        enabled_metrics = ["blur"]
-                        enabled_metrics += ["composition", "lighting", "exposure", "noise"]
+                        enabled_metrics = []
+                        if self.use_blur.get():
+                            enabled_metrics.append("blur")
+                        if self.use_composition.get():
+                            enabled_metrics.append("composition")
+                        if self.use_lighting.get():
+                            enabled_metrics.append("lighting")
+                            enabled_metrics.append("exposure")
+                        if self.use_noise.get():
+                            enabled_metrics.append("noise")
 
                         q_score = quality_score(metric_scores, metric_weights, enabled_metrics)
                         rating = rating_for_score(q_score, blurry_flag)

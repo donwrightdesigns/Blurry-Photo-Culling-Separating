@@ -26,6 +26,10 @@ Write-Host "`n[2/3] Building GUI.exe with PyInstaller..." -ForegroundColor Yello
 & $PythonExe -m PyInstaller --clean --windowed --onefile `
     --name=PRO-CULL-GUI `
     --hidden-import=tkinter `
+    --hidden-import=_tkinter `
+    --hidden-import=tkinter.ttk `
+    --hidden-import=tkinter.messagebox `
+    --hidden-import=tkinter.filedialog `
     --hidden-import=cv2 `
     --hidden-import=numpy `
     --hidden-import=PIL `
@@ -37,6 +41,8 @@ Write-Host "`n[2/3] Building GUI.exe with PyInstaller..." -ForegroundColor Yello
     --hidden-import=metrics.noise `
     --hidden-import=metrics.metadata `
     --hidden-import=exif_reader `
+    --collect-data=tcl `
+    --collect-data=tk `
     gui.py
 
 if ($LASTEXITCODE -ne 0) {
@@ -72,10 +78,11 @@ if (Test-Path $DistRoot) {
 mkdir $DistRoot | Out-Null
 
 # Copy key files
-Copy-Item $GuiExe "$DistRoot\PRO-CULL-GUI.exe"
-Copy-Item ".\PRO-CULL-v1.lrplugin" "$DistRoot\PRO-CULL-v1.lrplugin" -Recurse
-Copy-Item ".\install.ps1" "$DistRoot\install.ps1"
-Copy-Item ".\README.md" "$DistRoot\README.md"
+Copy-Item $GuiExe "$DistRoot\PRO-CULL-GUI.exe" -Force
+Copy-Item ".\gui.py" "$DistRoot\gui.py" -Force
+Copy-Item ".\PRO-CULL-v1.lrplugin" "$DistRoot\PRO-CULL-v1.lrplugin" -Recurse -Force
+Copy-Item ".\install.ps1" "$DistRoot\install.ps1" -Force
+Copy-Item ".\README.md" "$DistRoot\README.md" -Force
 
 # Create batch launcher
 $BatchContent = @'

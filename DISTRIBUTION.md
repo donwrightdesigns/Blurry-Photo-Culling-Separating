@@ -14,18 +14,18 @@ This folder contains everything needed for professional photographers to use PRO
 
 ### Core Files
 
-- **START.bat** (1 KB)
+- **START.bat** (recommended for all users)
   - One-click installer and launcher
   - Handles all setup automatically
-  - First run: 3-5 minutes
+  - First run: 3-5 minutes (downloads ~500MB)
   - Subsequent runs: ~5 seconds
   - Safe to run multiple times
 
-- **PRO-CULL-GUI.exe** (66 MB)
+- **PRO-CULL-GUI.exe** (66 MB, for advanced users)
   - Standalone GUI application
   - Fully self-contained executable
   - Windows 10+ (64-bit)
-  - No additional installation needed after START.bat runs
+  - May require system tkinter installation
 
 - **PRO-CULL-v1.lrplugin/** (Lightroom plugin)
   - Complete Lightroom Classic plugin
