@@ -94,6 +94,15 @@ ENV/
 # Intelija ID
 .idea/
 
+# VS Code
+.vscode/
+*.code-workspace
+
+# Node.js
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
 # other files
 *.json
 *.jpg
