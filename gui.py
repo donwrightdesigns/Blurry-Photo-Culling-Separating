@@ -67,6 +67,12 @@ try:
 except Exception:
     RAW_PREVIEW_AVAILABLE = False
 
+# Check if ExifTool is available for robust RAW EXIF extraction
+try:
+    from metrics.metadata import EXIFTOOL_AVAILABLE
+except ImportError:
+    EXIFTOOL_AVAILABLE = False
+
 
 class BlurDetectorGUI(tk.Tk):
     def __init__(self):
@@ -105,6 +111,24 @@ class BlurDetectorGUI(tk.Tk):
         self._prescan_results: Optional[Dict[str, Any]] = None
 
         self.create_widgets()
+        
+        # Show warning if ExifTool is not available
+        if not EXIFTOOL_AVAILABLE:
+            self.after(500, self._show_exiftool_warning)
+    
+    def _show_exiftool_warning(self):
+        """Show warning dialog if ExifTool is not installed."""
+        msg = (
+            "ExifTool not detected!\n\n"
+            "PRO-CULL requires ExifTool for accurate RAW file EXIF extraction "
+            "(NEF, CR2, CR3, ARW, DNG, etc.).\n\n"
+            "Without it, PRESCAN and RAW workflows may not function correctly.\n\n"
+            "Please install ExifTool - see INSTALL_EXIFTOOL.md for instructions.\n\n"
+            "Continue anyway?"
+        )
+        result = messagebox.askokcancel("ExifTool Not Found", msg, icon="warning")
+        if not result:
+            self.quit()
 
     def show_beta_info(self):
         """Explain the 0-100 scores and how to read the table."""

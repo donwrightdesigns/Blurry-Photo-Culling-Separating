@@ -65,27 +65,58 @@ def parse_args():
     return parser.parse_args()
 
 
-def find_images(image_paths, img_extensions=None, recursive=True):
+def find_images(image_paths, img_extensions=None, recursive=True, prefer_jpg_over_raw=True):
+    """Find images, optionally deduplicating RAW+JPG pairs by preferring JPG."""
     if img_extensions is None:
         img_extensions = [".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"]
         img_extensions += list(RAW_EXTENSIONS)  # Add RAW support
-    img_extensions += [i.upper() for i in img_extensions]
+    img_extensions_lower = {ext.lower() for ext in img_extensions}
+    img_extensions_lower.update({ext.upper() for ext in img_extensions})
+    
+    # Video extensions to explicitly exclude
+    video_extensions = {".mov", ".mp4", ".avi", ".mkv", ".m4v", ".mpg", ".mpeg", ".wmv", ".flv"}
 
+    all_files = set()  # Use set to avoid duplicates during collection
     for path_str in image_paths:
         path = pathlib.Path(path_str)
         if path.is_file():
-            if path.suffix not in img_extensions:
-                logging.info(f"{path.suffix} is not recognized, skipping {path}")
-                continue
-            yield path
+            if path.suffix.lower() in img_extensions_lower and path.suffix.lower() not in video_extensions:
+                all_files.add(path)
         elif path.is_dir():
-            for ext in img_extensions:
-                if recursive:
-                    yield from path.rglob(f"*{ext}")
-                else:
-                    yield from path.glob(f"*{ext}")
-        else:
-            logging.warning(f"Provided path '{path}' is neither file nor directory. Skipping.")
+            # Single pass: find all image files, not per-extension
+            if recursive:
+                for f in path.rglob("*"):
+                    if f.is_file() and f.suffix.lower() in img_extensions_lower and f.suffix.lower() not in video_extensions:
+                        all_files.add(f)
+            else:
+                for f in path.glob("*"):
+                    if f.is_file() and f.suffix.lower() in img_extensions_lower and f.suffix.lower() not in video_extensions:
+                        all_files.add(f)
+
+    # Deduplicate RAW+JPG pairs
+    if prefer_jpg_over_raw:
+        # Group by stem (filename without extension)
+        by_stem = {}
+        for f in all_files:
+            stem = f.stem
+            ext_lower = f.suffix.lower()
+            if stem not in by_stem:
+                by_stem[stem] = []
+            by_stem[stem].append((f, ext_lower))
+
+        # For each stem, prefer JPG/JPEG over RAW
+        jpg_exts = {".jpg", ".jpeg"}
+        for stem, files in sorted(by_stem.items()):
+            # Check if we have JPG
+            jpg_files = [f for f, ext in files if ext in jpg_exts]
+            if jpg_files:
+                yield jpg_files[0]  # Use JPG
+            else:
+                # No JPG, use first file (likely RAW or other format)
+                yield files[0][0]
+    else:
+        for f in sorted(all_files):
+            yield f
 
 
 def score_blur(lap_var, shutter=None, focal_length=None, safety_factor=1.5):
