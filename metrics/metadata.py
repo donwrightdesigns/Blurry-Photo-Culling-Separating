@@ -39,20 +39,38 @@ def _exiftool_extract(image_path: str) -> Dict[str, Any]:
             exif_list = json.loads(result.stdout)
             if exif_list:
                 raw = exif_list[0]
-                # Map exiftool keys to our standardized keys
+                # Map exiftool keys to our standardized keys expected by GUI
                 mapping = {
-                    "Model": "Model",
-                    "LensModel": "LensModel",
-                    "FNumber": "FNumber",
-                    "ExposureTime": "ExposureTime",
-                    "ISO": "ISOSpeedRatings",  # ExifTool uses "ISO"
-                    "DateTimeOriginal": "DateTimeOriginal",
-                    "FocalLength": "FocalLength",
-                    "ExposureBiasValue": "ExposureBiasValue",
+                    "Model": "camera_model",
+                    "LensModel": "lens_model",
+                    "FNumber": "aperture",
+                    "ExposureTime": "shutter",
+                    "ISO": "iso",
+                    "DateTimeOriginal": "datetime",
+                    "FocalLength": "focal_length",
+                    "ExposureBiasValue": "exposure_bias",
                 }
                 for et_key, our_key in mapping.items():
                     if et_key in raw:
-                        data[our_key] = raw[et_key]
+                        # Convert numeric values if needed
+                        val = raw[et_key]
+                        if our_key == "shutter" and isinstance(val, (int, float)):
+                            data[our_key] = float(val)
+                        elif our_key == "aperture" and isinstance(val, (int, float)):
+                            data[our_key] = float(val)
+                        elif our_key == "focal_length" and isinstance(val, str):
+                            # ExifTool often returns "35.0 mm", strip " mm"
+                            try:
+                                data[our_key] = float(val.replace(" mm", ""))
+                            except:
+                                data[our_key] = val
+                        elif our_key == "iso":
+                            try:
+                                data[our_key] = int(val)
+                            except:
+                                data[our_key] = val
+                        else:
+                            data[our_key] = val
     except Exception:
         pass
     return data
@@ -65,19 +83,48 @@ def _pillow_extract(image_path: str) -> Dict[str, Any]:
         img = Image.open(image_path)
         exif = img._getexif() or {}
         tagmap = {ExifTags.TAGS.get(k, k): v for k, v in exif.items()}
-        wanted = [
-            "Model",
-            "LensModel",
-            "FNumber",
-            "ExposureTime",
-            "ISOSpeedRatings",
-            "DateTimeOriginal",
-            "FocalLength",
-            "ExposureBiasValue",
-        ]
-        for key in wanted:
-            if key in tagmap:
-                data[key] = tagmap[key]
+        
+        # Helper to safely parse float
+        def _to_float(v):
+            if isinstance(v, (int, float)): return float(v)
+            if isinstance(v, tuple) and len(v) == 2 and v[1] != 0: return v[0] / v[1]
+            return None
+
+        # Map Pillow keys to standardized keys
+        # Model
+        if "Model" in tagmap:
+            data["camera_model"] = str(tagmap["Model"]).strip()
+        
+        # Lens
+        if "LensModel" in tagmap:
+            data["lens_model"] = str(tagmap["LensModel"]).strip()
+            
+        # DateTime
+        if "DateTimeOriginal" in tagmap:
+            data["datetime"] = str(tagmap["DateTimeOriginal"])
+        elif "DateTime" in tagmap:
+            data["datetime"] = str(tagmap["DateTime"])
+            
+        # ISO
+        if "ISOSpeedRatings" in tagmap:
+            data["iso"] = int(tagmap["ISOSpeedRatings"])
+            
+        # Aperture (FNumber)
+        if "FNumber" in tagmap:
+            data["aperture"] = _to_float(tagmap["FNumber"])
+            
+        # Shutter (ExposureTime)
+        if "ExposureTime" in tagmap:
+            data["shutter"] = _to_float(tagmap["ExposureTime"])
+            
+        # FocalLength
+        if "FocalLength" in tagmap:
+            data["focal_length"] = _to_float(tagmap["FocalLength"])
+            
+        # ExposureBias
+        if "ExposureBiasValue" in tagmap:
+            data["exposure_bias"] = _to_float(tagmap["ExposureBiasValue"])
+
     except Exception:
         pass
     return data
