@@ -24,7 +24,9 @@ import shutil
 import datetime
 import time
 import math
-from typing import List, Dict, Any, Optional
+import numpy as np
+from typing import List, Dict, Any, Optional, Tuple
+from collections import defaultdict
 
 LOG_PATH = os.path.join(os.getcwd(), "pro-cull-gui.log")
 
@@ -56,6 +58,7 @@ from metrics import (
     estimate_noise_score,
     extract_exif,
 )  # type: ignore
+from xmp_writer import write_xmp_sidecar  # type: ignore
 
 # Optional RAW preview helper (if available in repo)
 try:
@@ -90,14 +93,16 @@ class BlurDetectorGUI(tk.Tk):
         self.use_lighting = tk.BooleanVar(value=True)
         self.use_noise = tk.BooleanVar(value=True)
         self.write_xmp = tk.BooleanVar(value=True)
-        self.apply_to_lightroom = tk.BooleanVar(value=True)
-        self.skip_rated_flagged = tk.BooleanVar(value=True)
-        self.skip_edited = tk.BooleanVar(value=True)
+        self.skip_existing_xmp = tk.BooleanVar(value=True)
+        self.move_no_exif = tk.BooleanVar(value=False)
+        self.no_exif_subdir = tk.StringVar(value="No-EXIF-Images")
 
         # Internal state
         self.results: List[Dict[str, Any]] = []
         self._stop_requested = threading.Event()
         self._analysis_thread: Optional[threading.Thread] = None
+        self._prescan_thread: Optional[threading.Thread] = None
+        self._prescan_results: Optional[Dict[str, Any]] = None
 
         self.create_widgets()
 
@@ -147,30 +152,32 @@ class BlurDetectorGUI(tk.Tk):
         ttk.Label(left_col, text="Review if quality <").grid(row=0, column=4, sticky=tk.W, padx=8)
         ttk.Entry(left_col, textvariable=self.review_threshold, width=6).grid(row=0, column=5, sticky=tk.W, padx=4)
 
-        ttk.Checkbutton(left_col, text="Move rejects", variable=self.move_rejects).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=6)
+        ttk.Button(left_col, text="Pre-scan", command=self.start_prescan).grid(row=0, column=6, sticky=tk.W, padx=8)
+
+        ttk.Checkbutton(left_col, text="Move rejects (on disk)", variable=self.move_rejects).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=6)
         ttk.Label(left_col, text="Reject subdir:").grid(row=1, column=2, sticky=tk.W)
-        ttk.Entry(left_col, textvariable=self.rejection_subdir, width=18).grid(row=1, column=3, sticky=tk.W)
+        ttk.Entry(left_col, textvariable=self.rejection_subdir, width=12).grid(row=1, column=3, sticky=tk.W)
 
-        ttk.Checkbutton(left_col, text="Use RAW preview (if available)", variable=self.use_raw_preview).grid(row=1, column=4, columnspan=2, sticky=tk.W)
+        ttk.Checkbutton(left_col, text="Move no-EXIF images", variable=self.move_no_exif).grid(row=1, column=4, columnspan=1, sticky=tk.W)
+        ttk.Entry(left_col, textvariable=self.no_exif_subdir, width=12).grid(row=1, column=5, sticky=tk.W)
 
-        # Additional settings controls
+        # Metric selection controls
         ttk.Checkbutton(left_col, text="Use Blur metric", variable=self.use_blur).grid(row=2, column=0, columnspan=2, sticky=tk.W)
         ttk.Checkbutton(left_col, text="Use Composition metric", variable=self.use_composition).grid(row=2, column=2, columnspan=2, sticky=tk.W)
         ttk.Checkbutton(left_col, text="Use Lighting metric", variable=self.use_lighting).grid(row=2, column=4, columnspan=2, sticky=tk.W)
         ttk.Checkbutton(left_col, text="Use Noise metric", variable=self.use_noise).grid(row=3, column=0, columnspan=2, sticky=tk.W)
-        ttk.Checkbutton(left_col, text="Write XMP sidecars", variable=self.write_xmp).grid(row=3, column=2, columnspan=2, sticky=tk.W)
-        ttk.Checkbutton(left_col, text="Apply to Lightroom catalog", variable=self.apply_to_lightroom).grid(row=3, column=4, columnspan=2, sticky=tk.W)
-        ttk.Checkbutton(left_col, text="Skip rated/flagged photos", variable=self.skip_rated_flagged).grid(row=4, column=0, columnspan=2, sticky=tk.W)
-        ttk.Checkbutton(left_col, text="Skip edited photos", variable=self.skip_edited).grid(row=4, column=2, columnspan=2, sticky=tk.W)
+        ttk.Checkbutton(left_col, text="Write XMP sidecars (recommended)", variable=self.write_xmp).grid(row=3, column=2, columnspan=2, sticky=tk.W)
+        ttk.Checkbutton(left_col, text="Skip images with existing XMP", variable=self.skip_existing_xmp).grid(row=3, column=4, columnspan=2, sticky=tk.W)
+        ttk.Checkbutton(left_col, text="Use RAW preview (if available)", variable=self.use_raw_preview).grid(row=4, column=0, columnspan=2, sticky=tk.W)
 
         # Right column
         right_col = ttk.Frame(settings_frame)
         right_col.pack(side=tk.RIGHT, fill=tk.X)
 
-        ttk.Label(right_col, text="Chunk size:").grid(row=0, column=0, sticky=tk.W, padx=4)
+        ttk.Label(right_col, text="Batch size:").grid(row=0, column=0, sticky=tk.W, padx=4)
         ttk.Entry(right_col, textvariable=self.chunk_size, width=6).grid(row=0, column=1, sticky=tk.W, padx=4)
 
-        ttk.Label(right_col, text="Pause between chunks (s):").grid(row=0, column=2, sticky=tk.W, padx=8)
+        ttk.Label(right_col, text="Pause between batches (s):").grid(row=0, column=2, sticky=tk.W, padx=8)
         ttk.Entry(right_col, textvariable=self.pause_between_chunks, width=6).grid(row=0, column=3, sticky=tk.W, padx=4)
 
         ttk.Label(right_col, text="Max images (0 = all):").grid(row=1, column=0, sticky=tk.W, padx=4, pady=6)
@@ -249,6 +256,356 @@ class BlurDetectorGUI(tk.Tk):
         self._stop_requested.set()
         self.update_progress("Stop requested; finishing current image...")
 
+    def start_prescan(self):
+        """Launch PRESCAN in background thread."""
+        image_dir = self.image_dir.get()
+        if not image_dir:
+            messagebox.showerror("Error", "Please select an image directory first.")
+            return
+
+        if self._prescan_thread and self._prescan_thread.is_alive():
+            messagebox.showinfo("Pre-scan running", "Pre-scan is already running.")
+            return
+
+        self._stop_requested.clear()
+        self._prescan_thread = threading.Thread(target=self.run_prescan, daemon=True)
+        self._prescan_thread.start()
+
+    def run_prescan(self):
+        """Execute PRESCAN: EXIF sweep, smart sampling, metrics on ≤100 images, derive thresholds."""
+        image_dir = self.image_dir.get()
+        self.update_progress("Pre-scan: discovering images...")
+        log_event(f"prescan_start dir={image_dir}")
+
+        try:
+            # Step 0: Discover images
+            images = list(find_images([image_dir]))
+            total = len(images)
+            if total == 0:
+                self.update_progress("No images found.")
+                messagebox.showinfo("Pre-scan", "No images found in the selected directory.")
+                return
+
+            self.update_progress(f"Pre-scan: analyzing EXIF from {total} images...")
+
+            # Step 1: EXIF sweep (all images)
+            per_camera = defaultdict(list)
+            all_datetimes = []
+            total_with_exif = 0
+            total_without_exif = 0
+
+            for img_path in images:
+                if self._stop_requested.is_set():
+                    return
+                exif = extract_exif(str(img_path))
+                camera = exif.get("camera_model") or "Unknown"
+                datetime_str = exif.get("datetime") or ""
+                iso = exif.get("iso")
+                shutter = exif.get("shutter")
+                focal = exif.get("focal_length")
+
+                # Check if has minimal EXIF
+                has_exif = bool(datetime_str or camera != "Unknown" or iso or focal)
+                if has_exif:
+                    total_with_exif += 1
+                    # Parse datetime
+                    dt = self._parse_datetime(datetime_str)
+                    per_camera[camera].append({
+                        "path": str(img_path),
+                        "datetime": dt,
+                        "iso": iso,
+                        "shutter": shutter,
+                        "focal": focal,
+                    })
+                    if dt:
+                        all_datetimes.append(dt)
+                else:
+                    total_without_exif += 1
+
+            # Check if enough data
+            if total_with_exif < 30:
+                msg = (
+                    f"Pre-scan found {total} images, but only {total_with_exif} have usable EXIF.\n\n"
+                    "Not enough metadata to reliably tune thresholds.\n"
+                    "Consider using default settings or manually adjust."
+                )
+                messagebox.showinfo("Pre-scan: Insufficient EXIF", msg)
+                self.update_progress("Pre-scan: insufficient EXIF data.")
+                return
+
+            # Compute time span and density
+            if all_datetimes:
+                t_min = min(all_datetimes)
+                t_max = max(all_datetimes)
+                duration_hours = max((t_max - t_min).total_seconds() / 3600, 0.01)
+                images_per_hour = total_with_exif / duration_hours
+            else:
+                t_min = t_max = None
+                duration_hours = 0
+                images_per_hour = 0
+
+            self.update_progress("Pre-scan: selecting sample...")
+
+            # Step 2: Select sample (≤100 images, camera + time stratified)
+            sample_budget = min(100, total_with_exif)
+            prescan_samples = self._select_prescan_samples(per_camera, sample_budget)
+
+            self.update_progress(f"Pre-scan: analyzing {len(prescan_samples)} sampled images...")
+
+            # Step 3: Run full metrics on sample
+            sample_results = []
+            use_raw = bool(self.use_raw_preview.get()) and RAW_PREVIEW_AVAILABLE
+            blur_threshold = float(self.blur_threshold.get())
+
+            for i, sample_path in enumerate(prescan_samples, 1):
+                if self._stop_requested.is_set():
+                    return
+                self.update_progress(f"Pre-scan: analyzing sample {i}/{len(prescan_samples)}...")
+
+                try:
+                    # Read image
+                    if use_raw:
+                        try:
+                            img = read_image_or_raw(sample_path)
+                        except Exception:
+                            img = cv2.imread(sample_path)
+                    else:
+                        img = cv2.imread(sample_path)
+
+                    if img is None:
+                        continue
+
+                    # Run metrics (same as main pipeline)
+                    processed_image = fix_image_size(img.copy())
+                    blur_map, lap_var, blurry_flag = estimate_blur(processed_image, threshold=blur_threshold)
+                    exif = extract_exif(sample_path)
+                    blur_score = score_blur(lap_var, exif.get("shutter"), exif.get("focal_length"))
+                    comp_score = evaluate_composition(sample_path)
+                    light_dict = evaluate_lighting(sample_path)
+                    light_score = lighting_to_scalar(light_dict) if light_dict else None
+                    iso = exif.get("iso") or 100.0
+                    noise_score = estimate_noise_score(sample_path, iso=iso)
+                    exposure_score = light_score
+
+                    # Build enabled_metrics same way as main run
+                    metric_scores = {
+                        "blur": blur_score,
+                        "composition": comp_score,
+                        "lighting": light_score,
+                        "noise": noise_score,
+                        "exposure": exposure_score,
+                    }
+                    metric_weights = {
+                        "blur": 0.40,
+                        "composition": 0.30,
+                        "lighting": 0.20,
+                        "noise": 0.10,
+                        "exposure": 0.20,
+                    }
+                    enabled_metrics = []
+                    if self.use_blur.get():
+                        enabled_metrics.append("blur")
+                    if self.use_composition.get():
+                        enabled_metrics.append("composition")
+                    if self.use_lighting.get():
+                        enabled_metrics.append("lighting")
+                        enabled_metrics.append("exposure")
+                    if self.use_noise.get():
+                        enabled_metrics.append("noise")
+                    if not enabled_metrics:
+                        enabled_metrics = ["blur"]
+
+                    q_score = quality_score(metric_scores, metric_weights, enabled_metrics)
+
+                    sample_results.append({
+                        "path": sample_path,
+                        "quality": q_score,
+                        "blur": blur_score,
+                        "noise": noise_score,
+                        "lighting": light_score,
+                        "iso": iso,
+                        "camera": exif.get("camera_model") or "Unknown",
+                    })
+
+                except Exception as e:
+                    log_event(f"prescan_sample_error {sample_path} {e}")
+
+            if len(sample_results) < 10:
+                messagebox.showinfo(
+                    "Pre-scan: Too few samples",
+                    f"Only {len(sample_results)} images were successfully analyzed.\nCannot reliably suggest thresholds."
+                )
+                self.update_progress("Pre-scan: too few valid samples.")
+                return
+
+            # Step 4: Derive thresholds from distribution
+            q_scores = [r["quality"] for r in sample_results]
+            q_scores_sorted = sorted(q_scores)
+            n = len(q_scores_sorted)
+
+            # Percentiles
+            q10 = q_scores_sorted[int(n * 0.10)] if n > 10 else q_scores_sorted[0]
+            q25 = q_scores_sorted[int(n * 0.25)] if n > 4 else q_scores_sorted[0]
+            q50 = q_scores_sorted[int(n * 0.50)]
+            q75 = q_scores_sorted[int(n * 0.75)] if n > 4 else q_scores_sorted[-1]
+            q90 = q_scores_sorted[int(n * 0.90)] if n > 10 else q_scores_sorted[-1]
+
+            # Suggest reject ~15th percentile, review ~55th percentile
+            reject_suggested = round((q10 + q25) / 2)
+            review_suggested = round((q50 + q50 + q75) / 3)  # Weighted toward median
+
+            # Per-camera summary
+            camera_summary = {}
+            for cam in per_camera.keys():
+                cam_samples = [r for r in sample_results if r["camera"] == cam]
+                if cam_samples:
+                    isos = [r["iso"] for r in cam_samples if r["iso"]]
+                    median_iso = int(np.median(isos)) if isos else None
+                    camera_summary[cam] = {
+                        "count": len(per_camera[cam]),
+                        "median_iso": median_iso,
+                    }
+
+            # Store results
+            self._prescan_results = {
+                "total_images": total,
+                "with_exif": total_with_exif,
+                "without_exif": total_without_exif,
+                "sample_count": len(sample_results),
+                "time_span_hours": round(duration_hours, 1) if duration_hours else None,
+                "images_per_hour": round(images_per_hour) if images_per_hour else None,
+                "cameras": camera_summary,
+                "q10": round(q10, 1),
+                "q25": round(q25, 1),
+                "q50": round(q50, 1),
+                "q75": round(q75, 1),
+                "q90": round(q90, 1),
+                "reject_suggested": reject_suggested,
+                "review_suggested": review_suggested,
+            }
+
+            log_event(f"prescan_complete samples={len(sample_results)} reject={reject_suggested} review={review_suggested}")
+            self.update_progress("Pre-scan complete.")
+
+            # Show summary dialog
+            self.after(0, self._show_prescan_summary)
+
+        except Exception as e:
+            log_event(f"prescan_error {e}")
+            self.update_progress(f"Pre-scan error: {e}")
+            messagebox.showerror("Pre-scan error", f"An error occurred during pre-scan:\n{e}")
+
+    def _parse_datetime(self, dt_str: str) -> Optional[datetime.datetime]:
+        """Parse EXIF datetime string."""
+        if not dt_str:
+            return None
+        try:
+            # Common EXIF format: "2024:12:09 18:31:45"
+            return datetime.datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
+        except Exception:
+            return None
+
+    def _select_prescan_samples(self, per_camera: Dict, budget: int) -> List[str]:
+        """Select up to `budget` images stratified by camera and time."""
+        # Allocate budget per camera proportionally
+        total_images = sum(len(imgs) for imgs in per_camera.values())
+        samples = []
+        min_per_camera = 5
+
+        # First pass: allocate proportionally
+        allocations = {}
+        for cam, imgs in per_camera.items():
+            alloc = max(min_per_camera, int(budget * len(imgs) / total_images))
+            allocations[cam] = min(alloc, len(imgs))
+
+        # Adjust if over budget
+        total_alloc = sum(allocations.values())
+        if total_alloc > budget:
+            scale = budget / total_alloc
+            for cam in allocations:
+                allocations[cam] = max(min_per_camera, int(allocations[cam] * scale))
+
+        # Sample from each camera, stratified by time
+        for cam, imgs in per_camera.items():
+            n_cam = allocations.get(cam, min_per_camera)
+            if n_cam > len(imgs):
+                n_cam = len(imgs)
+
+            # Sort by datetime
+            sorted_imgs = sorted(imgs, key=lambda x: x["datetime"] or datetime.datetime.min)
+
+            # Stratify into bins
+            n_bins = min(10, n_cam)
+            bin_size = len(sorted_imgs) / n_bins
+            per_bin = max(1, n_cam // n_bins)
+
+            for b in range(n_bins):
+                start_idx = int(b * bin_size)
+                end_idx = int((b + 1) * bin_size)
+                bin_imgs = sorted_imgs[start_idx:end_idx]
+                if bin_imgs:
+                    # Pick evenly from this bin
+                    step = max(1, len(bin_imgs) // per_bin)
+                    for i in range(0, len(bin_imgs), step):
+                        if len(samples) < budget:
+                            samples.append(bin_imgs[i]["path"])
+                        else:
+                            break
+                if len(samples) >= budget:
+                    break
+
+        return samples[:budget]
+
+    def _show_prescan_summary(self):
+        """Display PRESCAN results in a dialog with 'Apply suggestions' button."""
+        if not self._prescan_results:
+            return
+
+        r = self._prescan_results
+        cameras = r.get("cameras", {})
+        n_cameras = len(cameras)
+
+        # Build camera summary text
+        cam_lines = []
+        for cam, info in cameras.items():
+            count = info.get("count", 0)
+            pct = round(100 * count / r["total_images"]) if r["total_images"] > 0 else 0
+            iso = info.get("median_iso")
+            iso_str = f", median ISO {iso}" if iso else ""
+            cam_lines.append(f"  • {cam}: {pct}% of frames{iso_str}")
+
+        cam_text = "\n".join(cam_lines) if cam_lines else "  • Unknown"
+
+        time_text = ""
+        if r.get("time_span_hours") and r.get("images_per_hour"):
+            time_text = f"Time span: {r['time_span_hours']:.1f} hours  |  Images/hour: ~{r['images_per_hour']}\n"
+
+        msg = (
+            f"PRE-SCAN SUMMARY (sampled {r['sample_count']} images)\n\n"
+            f"Total images: {r['total_images']}\n"
+            f"With EXIF: {r['with_exif']}  |  Without EXIF: {r['without_exif']}\n"
+            f"{time_text}"
+            f"\nCameras detected: {n_cameras}\n{cam_text}\n"
+            f"\nQuality distribution (this shoot):\n"
+            f"  10th percentile: {r['q10']}\n"
+            f"  25th percentile: {r['q25']}\n"
+            f"  Median: {r['q50']}\n"
+            f"  75th percentile: {r['q75']}\n"
+            f"  90th percentile: {r['q90']}\n"
+            f"\nSUGGESTED THRESHOLDS FOR THIS SHOOT:\n"
+            f"  Reject if quality < {r['reject_suggested']}\n"
+            f"  Review if quality < {r['review_suggested']}\n\n"
+            "Apply these suggestions?"
+        )
+
+        # Use a custom dialog with Yes/No buttons
+        apply = messagebox.askyesno("Pre-scan Results", msg)
+        if apply:
+            self.reject_threshold.set(r["reject_suggested"])
+            self.review_threshold.set(r["review_suggested"])
+            messagebox.showinfo("Settings Applied", "Pre-scan suggestions have been applied to Reject and Review thresholds.")
+            log_event(f"prescan_applied reject={r['reject_suggested']} review={r['review_suggested']}")
+
     def run_analysis(self):
         start_time = time.time()
         image_dir = self.image_dir.get()
@@ -322,6 +679,29 @@ class BlurDetectorGUI(tk.Tk):
                         noise_score = estimate_noise_score(str(image_path), iso=iso)
                         exposure_score = light_score
 
+                        # Check if we should skip this image (existing XMP)
+                        xmp_path = pathlib.Path(str(image_path)).with_suffix(".xmp")
+                        if self.skip_existing_xmp.get() and xmp_path.exists():
+                            log_event(f"skip_existing_xmp: {image_path}")
+                            processed += 1
+                            continue
+
+                        # Check for missing/bad EXIF
+                        has_minimal_exif = bool(
+                            exif.get("datetime") or exif.get("camera_model") or 
+                            exif.get("iso") or exif.get("focal_length")
+                        )
+                        if not has_minimal_exif and self.move_no_exif.get():
+                            # Move to no-EXIF folder and skip analysis
+                            try:
+                                moved = self.safe_move(image_path, self.no_exif_subdir.get(), dry_run=dry_run)
+                                if moved:
+                                    log_event(f"moved_no_exif: {image_path}")
+                            except Exception as e:
+                                log_event(f"move_no_exif_error {image_path} {e}")
+                            processed += 1
+                            continue
+
                         metric_scores = {
                             "blur": blur_score,
                             "composition": comp_score,
@@ -347,6 +727,10 @@ class BlurDetectorGUI(tk.Tk):
                         if self.use_noise.get():
                             enabled_metrics.append("noise")
 
+                        # Ensure at least one metric is enabled
+                        if not enabled_metrics:
+                            enabled_metrics = ["blur"]
+
                         q_score = quality_score(metric_scores, metric_weights, enabled_metrics)
                         rating = rating_for_score(q_score, blurry_flag)
                         label = label_for_score(q_score, blurry_flag)
@@ -368,6 +752,24 @@ class BlurDetectorGUI(tk.Tk):
                         }
                         self.results.append(row)
                         self.insert_row(row)
+
+                        # Write XMP sidecar if enabled
+                        if self.write_xmp.get():
+                            try:
+                                write_xmp_sidecar(
+                                    image_path=str(image_path),
+                                    rating=rating,
+                                    label=label,
+                                    quality_score=q_score,
+                                    blur_score=blur_score,
+                                    composition_score=comp_score,
+                                    lighting_score=light_score,
+                                    noise_score=noise_score,
+                                    collection=collection,
+                                    overwrite=False,
+                                )
+                            except Exception as e:
+                                log_event(f"xmp_error {image_path} {e}")
 
                         # Move rejects if configured
                         if move_rejects and (q_score < reject_cut or blurry_flag):
