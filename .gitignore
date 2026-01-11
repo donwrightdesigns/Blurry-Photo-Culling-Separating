@@ -94,8 +94,9 @@ ENV/
 # Intelija ID
 .idea/
 
-# VS Code
-.vscode/
+# VS Code (but track settings.json)
+.vscode/*
+!.vscode/settings.json
 *.code-workspace
 
 # Node.js
@@ -103,8 +104,9 @@ node_modules/
 package-lock.json
 pnpm-lock.yaml
 
-# other files
+# other files (but allow .vscode/settings.json)
 *.json
+!.vscode/settings.json
 *.jpg
 *.jpeg
 *.png
