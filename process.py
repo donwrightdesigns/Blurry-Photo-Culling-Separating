@@ -167,36 +167,30 @@ def quality_score(metric_scores: dict, metric_weights: dict, enabled: list):
     return float(sum(contribs) / sum(weights))
 
 
-def rating_for_score(score, blurry):
-    if blurry or score < 30:
+def rating_for_score(score, blurry, reject_cut=30.0, review_cut=65.0):
+    if blurry or score < reject_cut:
         return 1
-    if score < 50:
+    if score < 50: # Standard 2-star boundary, less dependent on slider
         return 2
-    if score < 65:
+    if score < review_cut:
         return 3
     if score < 80:
         return 4
-    if score < 90:
-        return 5
     return 5
 
 
-def label_for_score(score, blurry):
-    if blurry or score < 30:
+def label_for_score(score, blurry, reject_cut=30.0, review_cut=65.0):
+    if blurry or score < reject_cut:
         return "Red"
-    if score < 50:
+    if score < review_cut:
         return "Yellow"
-    if score < 65:
-        return "Yellow"
-    if score < 80:
-        return "Green"
     return "Green"
 
 
-def collection_for_score(score, blurry):
-    if blurry or score < 30:
+def collection_for_score(score, blurry, reject_cut=30.0, review_cut=65.0):
+    if blurry or score < reject_cut:
         return "PRECURSOR Rejects"
-    if score < 65:
+    if score < review_cut:
         return "PRECURSOR Review"
     return "PRECURSOR Keepers"
 

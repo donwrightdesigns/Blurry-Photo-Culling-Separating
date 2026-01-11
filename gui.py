@@ -79,12 +79,13 @@ class BlurDetectorGUI(tk.Tk):
         self.reject_threshold = tk.DoubleVar(value=30.0)
         self.review_threshold = tk.DoubleVar(value=65.0)
         self.move_rejects = tk.BooleanVar(value=False)
-        self.rejection_subdir = tk.StringVar(value="Blurry-Images")
+        self.rejection_subdir = tk.StringVar(value="Rejects") # Renamed for clarity
         self.use_raw_preview = tk.BooleanVar(value=RAW_PREVIEW_AVAILABLE)
         self.chunk_size = tk.IntVar(value=100)
         self.pause_between_chunks = tk.DoubleVar(value=5.0)  # seconds
         self.max_images = tk.IntVar(value=0)  # 0 means no limit
         self.dry_run = tk.BooleanVar(value=False)
+        self.recursive_search = tk.BooleanVar(value=True) # For new checkbox
         
         # Additional settings synchronized from Lightroom plugin
         self.use_blur = tk.BooleanVar(value=True)
@@ -158,6 +159,7 @@ class BlurDetectorGUI(tk.Tk):
         ttk.Label(dir_frame, text="Image Directory:").pack(side=tk.LEFT)
         ttk.Entry(dir_frame, textvariable=self.image_dir, width=60).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(dir_frame, text="Browse", command=self.browse_directory).pack(side=tk.LEFT, padx=6)
+        ttk.Checkbutton(dir_frame, text="Include subdirectories", variable=self.recursive_search).pack(side=tk.LEFT, padx=6)
 
         # Settings frame
         settings_frame = ttk.Frame(self, padding="8")
@@ -167,36 +169,51 @@ class BlurDetectorGUI(tk.Tk):
         left_col = ttk.Frame(settings_frame)
         left_col.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        ttk.Label(left_col, text="Blur threshold:").grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
-        ttk.Entry(left_col, textvariable=self.blur_threshold, width=8).grid(row=0, column=1, sticky=tk.W, padx=4)
+        # --- Threshold Sliders ---
+        thresh_frame = ttk.Frame(left_col)
+        thresh_frame.grid(row=0, column=0, columnspan=7, sticky=tk.W, pady=4)
 
-        ttk.Label(left_col, text="Reject if quality <").grid(row=0, column=2, sticky=tk.W, padx=8)
-        ttk.Entry(left_col, textvariable=self.reject_threshold, width=6).grid(row=0, column=3, sticky=tk.W, padx=4)
+        ttk.Button(thresh_frame, text="Pre-scan", command=self.start_prescan).pack(side=tk.LEFT, padx=(0,10))
 
-        ttk.Label(left_col, text="Review if quality <").grid(row=0, column=4, sticky=tk.W, padx=8)
-        ttk.Entry(left_col, textvariable=self.review_threshold, width=6).grid(row=0, column=5, sticky=tk.W, padx=4)
+        # Reject slider
+        ttk.Label(thresh_frame, text="Reject <").pack(side=tk.LEFT)
+        ttk.Scale(thresh_frame, from_=0, to=100, variable=self.reject_threshold, orient=tk.HORIZONTAL, command=self.update_filters).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Label(thresh_frame, textvariable=self.reject_threshold, width=5).pack(side=tk.LEFT)
 
-        ttk.Button(left_col, text="Pre-scan", command=self.start_prescan).grid(row=0, column=6, sticky=tk.W, padx=8)
+        # Review slider
+        ttk.Label(thresh_frame, text="Review <", style="Review.TLabel").pack(side=tk.LEFT, padx=(15,0))
+        ttk.Scale(thresh_frame, from_=0, to=100, variable=self.review_threshold, orient=tk.HORIZONTAL, command=self.update_filters).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Label(thresh_frame, textvariable=self.review_threshold, width=5).pack(side=tk.LEFT)
+        
+        # --- File Operations ---
+        move_frame = ttk.Frame(left_col)
+        move_frame.grid(row=1, column=0, columnspan=7, sticky=tk.W, pady=6)
 
-        ttk.Checkbutton(left_col, text="Move rejects (on disk)", variable=self.move_rejects).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=6)
-        ttk.Label(left_col, text="Reject subdir:").grid(row=1, column=2, sticky=tk.W)
-        ttk.Entry(left_col, textvariable=self.rejection_subdir, width=12).grid(row=1, column=3, sticky=tk.W)
+        ttk.Checkbutton(move_frame, text="Move rejects to:", variable=self.move_rejects).pack(side=tk.LEFT)
+        ttk.Entry(move_frame, textvariable=self.rejection_subdir, width=14).pack(side=tk.LEFT, padx=4)
 
-        ttk.Checkbutton(left_col, text="Move no-EXIF images", variable=self.move_no_exif).grid(row=1, column=4, columnspan=1, sticky=tk.W)
-        ttk.Entry(left_col, textvariable=self.no_exif_subdir, width=12).grid(row=1, column=5, sticky=tk.W)
+        ttk.Checkbutton(move_frame, text="Move no-EXIF to:", variable=self.move_no_exif).pack(side=tk.LEFT, padx=(10,0))
+        ttk.Entry(move_frame, textvariable=self.no_exif_subdir, width=14).pack(side=tk.LEFT, padx=4)
+        
+        # --- Metrics & XMP ---
+        metrics_frame = ttk.Frame(left_col)
+        metrics_frame.grid(row=2, column=0, columnspan=7, sticky=tk.W)
+        
+        ttk.Checkbutton(metrics_frame, text="Use Blur", variable=self.use_blur).pack(side=tk.LEFT)
+        ttk.Checkbutton(metrics_frame, text="Use Composition", variable=self.use_composition).pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(metrics_frame, text="Use Lighting", variable=self.use_lighting).pack(side=tk.LEFT)
+        ttk.Checkbutton(metrics_frame, text="Use Noise", variable=self.use_noise).pack(side=tk.LEFT, padx=10)
 
-        # Metric selection controls
-        ttk.Checkbutton(left_col, text="Use Blur metric", variable=self.use_blur).grid(row=2, column=0, columnspan=2, sticky=tk.W)
-        ttk.Checkbutton(left_col, text="Use Composition metric", variable=self.use_composition).grid(row=2, column=2, columnspan=2, sticky=tk.W)
-        ttk.Checkbutton(left_col, text="Use Lighting metric", variable=self.use_lighting).grid(row=2, column=4, columnspan=2, sticky=tk.W)
-        ttk.Checkbutton(left_col, text="Use Noise metric", variable=self.use_noise).grid(row=3, column=0, columnspan=2, sticky=tk.W)
-        ttk.Checkbutton(left_col, text="Write XMP sidecars (recommended)", variable=self.write_xmp).grid(row=3, column=2, columnspan=2, sticky=tk.W)
-        ttk.Checkbutton(left_col, text="Skip images with existing XMP", variable=self.skip_existing_xmp).grid(row=3, column=4, columnspan=2, sticky=tk.W)
-        ttk.Checkbutton(left_col, text="Use RAW preview (if available)", variable=self.use_raw_preview).grid(row=4, column=0, columnspan=2, sticky=tk.W)
-
-        # Right column
+        xmp_frame = ttk.Frame(left_col)
+        xmp_frame.grid(row=3, column=0, columnspan=7, sticky=tk.W, pady=6)
+        
+        ttk.Checkbutton(xmp_frame, text="Write XMP sidecars", variable=self.write_xmp).pack(side=tk.LEFT)
+        ttk.Checkbutton(xmp_frame, text="Skip existing XMP", variable=self.skip_existing_xmp).pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(xmp_frame, text="Use RAW preview", variable=self.use_raw_preview).pack(side=tk.LEFT)
+        
+        # --- Right column ---
         right_col = ttk.Frame(settings_frame)
-        right_col.pack(side=tk.RIGHT, fill=tk.X)
+        right_col.pack(side=tk.RIGHT, fill=tk.X, padx=(20,0))
 
         ttk.Label(right_col, text="Batch size:").grid(row=0, column=0, sticky=tk.W, padx=4)
         ttk.Entry(right_col, textvariable=self.chunk_size, width=6).grid(row=0, column=1, sticky=tk.W, padx=4)
@@ -240,6 +257,12 @@ class BlurDetectorGUI(tk.Tk):
         for col, text in headings.items():
             self.tree.heading(col, text=text)
             self.tree.column(col, width=120 if col != "file" else 380, anchor=tk.W)
+        
+        # Configure tags for color-coding rows
+        self.tree.tag_configure('reject', background='#FFD2D2') # Light red
+        self.tree.tag_configure('review', background='#FFFFD4') # Light yellow
+        self.tree.tag_configure('keeper', background='#D4FFD4') # Light green
+
         self.tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
         self.tree.bind("<<TreeviewSelect>>", self.on_row_select)
 
@@ -280,6 +303,8 @@ class BlurDetectorGUI(tk.Tk):
         self._stop_requested.clear()
         self.results = []
         self.clear_table()
+        
+        # Start analysis
         self._analysis_thread = threading.Thread(target=self.run_analysis, daemon=True)
         self._analysis_thread.start()
 
@@ -767,6 +792,14 @@ class BlurDetectorGUI(tk.Tk):
                         label = label_for_score(q_score, blurry_flag)
                         collection = collection_for_score(q_score, blurry_flag)
 
+                        # Determine initial tag for color-coding
+                        if q_score < reject_cut or blurry_flag:
+                            tag = 'reject'
+                        elif q_score < review_cut:
+                            tag = 'review'
+                        else:
+                            tag = 'keeper'
+                            
                         row = {
                             "path": str(image_path),
                             "quality": q_score,
@@ -782,7 +815,7 @@ class BlurDetectorGUI(tk.Tk):
                             "blurry": bool(blurry_flag),
                         }
                         self.results.append(row)
-                        self.insert_row(row)
+                        self.insert_row(row, tag=tag)
 
                         # Write XMP sidecar if enabled
                         if self.write_xmp.get():
@@ -820,37 +853,11 @@ class BlurDetectorGUI(tk.Tk):
                         failures.append(f"process_error:{image_path}")
                         error_count += 1
 
-                    # timing and ETA
-                    t1 = time.time()
-                    elapsed = t1 - t0
-                    if avg_time is None:
-                        avg_time = elapsed
-                    else:
-                        avg_time = (1 - alpha) * avg_time + alpha * elapsed
-                    remaining = total - idx
-                    eta = remaining * (avg_time or 0)
-                    eta_str = self._format_seconds(eta)
-                    self.update_progress(f"[{idx}/{total}] {pathlib.Path(image_path).name} | ETA: {eta_str}")
-
-                # Pause between chunks to let system breathe
-                if pause_secs > 0 and (chunk_start + chunk_size) < total and not self._stop_requested.is_set():
-                    self.update_progress(f"Pausing {pause_secs:.1f}s between chunks...")
-                    time.sleep(pause_secs)
-
-            elapsed_total = time.time() - start_time
-            summary = {
-                "processed": processed,
-                "moved": moved_count,
-                "errors": error_count,
-                "failures_sample": failures[:10],
-                "elapsed_seconds": round(elapsed_total, 2),
-            }
-            log.info(f"run_complete dir={image_dir} processed={processed} moved={moved_count} errors={error_count} elapsed={elapsed_total:.2f}s")
-            self.update_progress("Analysis complete (BETA scoring).")
-            self._show_run_summary(summary)
-
-        except Exception as e:
-            log.exception(f"Critical error during analysis run for dir={image_dir}")
+                        # After main analysis, apply initial filter view
+                        self.update_filters()
+                        
+                    except Exception as e:
+                        log.exception(f"Unhandled error processing {image_path}")
             self.update_progress(f"An error occurred: {e}")
             messagebox.showerror("Analysis error", f"An unexpected error occurred:\\n{e}")
 
@@ -915,7 +922,7 @@ class BlurDetectorGUI(tk.Tk):
         for r in self.tree.get_children():
             self.tree.delete(r)
 
-    def insert_row(self, row: Dict[str, Any]):
+    def insert_row(self, row: Dict[str, Any], tag: str = ''):
         try:
             self.tree.insert(
                 "",
@@ -924,14 +931,14 @@ class BlurDetectorGUI(tk.Tk):
                     pathlib.Path(row["path"]).name,
                     f"{row['quality']:.1f}",
                     f"{row['blur']:.1f}",
-                    f"{(row['comp'] or 0):.1f}",
-                    f"{(row['light'] or 0):.1f}",
-                    f"{(row['noise'] or 0):.1f}",
+                    f"{(row.get('comp') or 0):.1f}",
+                    f"{(row.get('light') or 0):.1f}",
+                    f"{(row.get('noise') or 0):.1f}",
                     row["rating"],
                     row["label"],
                     row["collection"],
                 ),
-                tags=(row["path"],),
+                tags=(row["path"], tag), # Add color tag here
             )
         except Exception:
             # Defensive: ignore UI insertion errors but log them
