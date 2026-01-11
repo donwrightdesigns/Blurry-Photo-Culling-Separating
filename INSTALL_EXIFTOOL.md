@@ -9,16 +9,17 @@ PRO-CULL uses ExifTool for robust EXIF extraction from RAW files (NEF, CR2, CR3,
 1. Visit: https://exiftool.org/
 2. Download **Windows Executable (64-bit)**: `exiftool-13.45_64.zip`
    - Direct link: https://sourceforge.net/projects/exiftool/files/exiftool-13.45_64.zip/download
-3. Extract the ZIP file to: `J:\TOOLS\exiftool\`
+3. Extract the ZIP file to a permanent location (e.g., `J:\TOOLS\exiftool\` or `C:\Program Files\ExifTool\`)
 4. Rename `exiftool(-k).exe` → `exiftool.exe`
-5. Add `J:\TOOLS\exiftool\` to your Windows PATH
+5. **Critical Step**: Add that folder to your Windows PATH environment variable.
 
-### Option 2: Add to PATH Manually
-If you've already extracted exiftool.exe:
+### Option 2: Add to PATH Manually (PowerShell)
+Replace `J:\TOOLS\exiftool` with your actual installation folder:
 ```powershell
 $env:PATH += ";J:\TOOLS\exiftool"
 [Environment]::SetEnvironmentVariable("PATH", $env:PATH, [EnvironmentVariableTarget]::User)
 ```
+*Restart your terminal or VS Code after running this.*
 
 ### Option 3: Chocolatey (if you have it)
 ```powershell

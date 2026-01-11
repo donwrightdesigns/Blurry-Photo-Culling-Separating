@@ -6,6 +6,8 @@ import json
 import shutil
 import math
 
+log = logging.getLogger(__name__)
+
 import cv2
 import numpy as np
 
@@ -225,7 +227,7 @@ def main():
     recursive = not args.no_recursive
     images = list(find_images(args.images, recursive=recursive))
     total_images = len(images)
-    logging.info(f"Discovered {total_images} images to process.")
+    log.info(f"Discovered {total_images} images to process.")
 
     results = []
     tsv_lines = []
@@ -235,11 +237,11 @@ def main():
 
     for idx, image_path in enumerate(images, start=1):
         processed_image_count += 1
-        logging.info(f"[{idx}/{total_images}] Processing {image_path}")
-        logging.debug(f"Reading image: {image_path}")
+        log.info(f"[{idx}/{total_images}] Processing {image_path}")
+        log.debug(f"Reading image: {image_path}")
         image = read_image_or_raw(str(image_path))
         if image is None:
-            logging.warning(f"Failed to read image from {image_path}; skipping!")
+            log.warning(f"Failed to read image from {image_path}; skipping!")
             continue
 
         if fix_size:
@@ -324,9 +326,9 @@ def main():
                     collection=collection,
                     overwrite=args.overwrite_xmp,
                 )
-                logging.debug(f"Wrote XMP sidecar: {xmp_path}")
+                log.debug(f"Wrote XMP sidecar: {xmp_path}")
             except Exception as e:
-                logging.error(f"Failed to write XMP for {image_path}: {e}")
+                log.error(f"Failed to write XMP for {image_path}: {e}")
 
         if args.move_blurry and blurry_flag:
             try:
@@ -335,15 +337,15 @@ def main():
                 target_blurry_dir.mkdir(parents=True, exist_ok=True)
                 destination_path = target_blurry_dir / image_path.name
                 if destination_path.exists():
-                    logging.warning(f"File '{destination_path}' already exists. Skipping move for '{image_path}'.")
+                    log.warning(f"File '{destination_path}' already exists. Skipping move for '{image_path}'.")
                 elif image_path.exists():
                     shutil.move(str(image_path), str(destination_path))
-                    logging.info(f"MOVED blurry image: '{image_path}' -> '{destination_path}'")
+                    log.info(f"MOVED blurry image: '{image_path}' -> '{destination_path}'")
                     moved_count += 1
                 else:
-                    logging.warning(f"Source image '{image_path}' not found for moving.")
+                    log.warning(f"Source image '{image_path}' not found for moving.")
             except Exception as e:
-                logging.error(f"Error moving blurry image '{image_path}' to '{destination_path}': {e}")
+                log.error(f"Error moving blurry image '{image_path}' to '{destination_path}': {e}")
                 error_moving_count += 1
 
         if args.display:
@@ -351,13 +353,13 @@ def main():
             cv2.imshow("Blur Map (Processed)", pretty_blur_map(blur_map))
             key = cv2.waitKey(0)
             if key == ord("q"):
-                logging.info('Exiting due to "q" key press...')
+                log.info('Exiting due to "q" key press...')
                 cv2.destroyAllWindows()
                 break
             cv2.destroyAllWindows()
 
     if save_path is not None:
-        logging.info(f"Saving JSON results to {save_path}")
+        log.info(f"Saving JSON results to {save_path}")
         save_path.parent.mkdir(parents=True, exist_ok=True)
         output_data = {
             "source_image_paths_or_dirs": args.images,
@@ -374,22 +376,22 @@ def main():
                 output_data["blurry_images_move_errors"] = error_moving_count
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump(output_data, f, indent=2)
-        logging.info(f"Saved results to {save_path}")
+        log.info(f"Saved results to {save_path}")
 
     if args.tsv_path:
         tsv_path = pathlib.Path(args.tsv_path)
         tsv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(tsv_path, "w", encoding="utf-8") as f:
-            f.write("path\tquality_score\trating\tlabel\tcollection\tblurry\n")
+            f.write("path\\tquality_score\\trating\\tlabel\\tcollection\\tblurry\\n")
             for line in tsv_lines:
                 f.write(line)
-        logging.info(f"Saved TSV results to {tsv_path}")
+        log.info(f"Saved TSV results to {tsv_path}")
 
-    logging.info(f"Processing complete. Total images considered: {processed_image_count}.")
+    log.info(f"Processing complete. Total images considered: {processed_image_count}.")
     if args.move_blurry:
-        logging.info(f"Total blurry images moved: {moved_count}")
+        log.info(f"Total blurry images moved: {moved_count}")
         if error_moving_count > 0:
-            logging.warning(f"Errors encountered while moving images: {error_moving_count}")
+            log.warning(f"Errors encountered while moving images: {error_moving_count}")
 
 
 if __name__ == "__main__":

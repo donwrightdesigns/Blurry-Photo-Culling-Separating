@@ -14,7 +14,8 @@ Enhancements over previous version:
 """
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk, scrolledtext
+import logging
 import threading
 import json
 import pathlib
@@ -28,17 +29,9 @@ import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
 
-LOG_PATH = os.path.join(os.getcwd(), "pro-cull-gui.log")
+import logging
+log = logging.getLogger(__name__)
 
-
-def log_event(message: str) -> None:
-    try:
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(f"{ts} | {message}\n")
-    except Exception:
-        # Logging must never break the GUI
-        pass
 
 
 # Import local processing helpers (assumed present in repo)
@@ -112,9 +105,16 @@ class BlurDetectorGUI(tk.Tk):
 
         self.create_widgets()
         
+        # Initialize new logging system
+        self.after(100, self._init_logging)
+
         # Show warning if ExifTool is not available
         if not EXIFTOOL_AVAILABLE:
             self.after(500, self._show_exiftool_warning)
+    
+    def _init_logging(self):
+        """Initialize the logger with the GUI widget."""
+        setup_logging(gui_log_widget=self.log_widget, level=logging.INFO)
     
     def _show_exiftool_warning(self):
         """Show warning dialog if ExifTool is not installed."""
@@ -252,7 +252,14 @@ class BlurDetectorGUI(tk.Tk):
         detail_frame.pack(fill=tk.X)
         ttk.Label(detail_frame, text="Selected EXIF / details:").pack(anchor=tk.W)
         self.detail_text = tk.Text(detail_frame, height=6, wrap=tk.WORD, state=tk.DISABLED)
-        self.detail_text.pack(fill=tk.X)
+        self.detail_text.pack(fill=tk.X, expand=True)
+        
+        # Log viewer pane
+        log_frame = ttk.Frame(self, padding="8")
+        log_frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(log_frame, text="Log Console:").pack(anchor=tk.W)
+        self.log_widget = scrolledtext.ScrolledText(log_frame, height=8, state=tk.DISABLED)
+        self.log_widget.pack(fill=tk.BOTH, expand=True)
 
     def browse_directory(self):
         directory = filedialog.askdirectory()
@@ -299,7 +306,7 @@ class BlurDetectorGUI(tk.Tk):
         """Execute PRESCAN: EXIF sweep, smart sampling, metrics on ≤100 images, derive thresholds."""
         image_dir = self.image_dir.get()
         self.update_progress("Pre-scan: discovering images...")
-        log_event(f"prescan_start dir={image_dir}")
+        log.info(f"prescan_start dir={image_dir}")
 
         try:
             # Step 0: Discover images
@@ -452,7 +459,7 @@ class BlurDetectorGUI(tk.Tk):
                     })
 
                 except Exception as e:
-                    log_event(f"prescan_sample_error {sample_path} {e}")
+                    log.warning(f"prescan_sample_error {sample_path} {e}")
 
             if len(sample_results) < 10:
                 messagebox.showinfo(
@@ -508,16 +515,16 @@ class BlurDetectorGUI(tk.Tk):
                 "review_suggested": review_suggested,
             }
 
-            log_event(f"prescan_complete samples={len(sample_results)} reject={reject_suggested} review={review_suggested}")
+            log.info(f"prescan_complete samples={len(sample_results)} reject={reject_suggested} review={review_suggested}")
             self.update_progress("Pre-scan complete.")
 
             # Show summary dialog
             self.after(0, self._show_prescan_summary)
 
         except Exception as e:
-            log_event(f"prescan_error {e}")
+            log.exception(f"Critical error during prescan for dir={image_dir}")
             self.update_progress(f"Pre-scan error: {e}")
-            messagebox.showerror("Pre-scan error", f"An error occurred during pre-scan:\n{e}")
+            messagebox.showerror("Pre-scan error", f"An error occurred during pre-scan:\\n{e}")
 
     def _parse_datetime(self, dt_str: str) -> Optional[datetime.datetime]:
         """Parse EXIF datetime string."""
@@ -628,7 +635,7 @@ class BlurDetectorGUI(tk.Tk):
             self.reject_threshold.set(r["reject_suggested"])
             self.review_threshold.set(r["review_suggested"])
             messagebox.showinfo("Settings Applied", "Pre-scan suggestions have been applied to Reject and Review thresholds.")
-            log_event(f"prescan_applied reject={r['reject_suggested']} review={r['review_suggested']}")
+        log.info(f"prescan_applied reject={r['reject_suggested']} review={r['review_suggested']}")
 
     def run_analysis(self):
         start_time = time.time()
@@ -644,7 +651,7 @@ class BlurDetectorGUI(tk.Tk):
         max_images = int(self.max_images.get())
         dry_run = bool(self.dry_run.get())
 
-        log_event(f"run_start dir={image_dir} blur_threshold={blur_threshold} reject<{reject_cut} review<{review_cut} move_rejects={move_rejects} use_raw={use_raw} chunk={chunk_size} pause={pause_secs} dry_run={dry_run}")
+        log.info(f"run_start dir={image_dir} blur_threshold={blur_threshold} reject<{reject_cut} review<{review_cut} move_rejects={move_rejects} use_raw={use_raw} chunk={chunk_size} pause={pause_secs} dry_run={dry_run}")
 
         try:
             images = list(find_images([image_dir]))
@@ -706,7 +713,7 @@ class BlurDetectorGUI(tk.Tk):
                         # Check if we should skip this image (existing XMP)
                         xmp_path = pathlib.Path(str(image_path)).with_suffix(".xmp")
                         if self.skip_existing_xmp.get() and xmp_path.exists():
-                            log_event(f"skip_existing_xmp: {image_path}")
+                            log.warning(f"skip_existing_xmp: {image_path}")
                             processed += 1
                             continue
 
@@ -720,9 +727,9 @@ class BlurDetectorGUI(tk.Tk):
                             try:
                                 moved = self.safe_move(image_path, self.no_exif_subdir.get(), dry_run=dry_run)
                                 if moved:
-                                    log_event(f"moved_no_exif: {image_path}")
+                                    log.info(f"moved_no_exif: {image_path}")
                             except Exception as e:
-                                log_event(f"move_no_exif_error {image_path} {e}")
+                                log.error(f"move_no_exif_error {image_path} {e}")
                             processed += 1
                             continue
 
@@ -793,7 +800,7 @@ class BlurDetectorGUI(tk.Tk):
                                     overwrite=False,
                                 )
                             except Exception as e:
-                                log_event(f"xmp_error {image_path} {e}")
+                                log.error(f"xmp_error {image_path} {e}")
 
                         # Move rejects if configured
                         if move_rejects and (q_score < reject_cut or blurry_flag):
@@ -802,14 +809,14 @@ class BlurDetectorGUI(tk.Tk):
                                 if moved:
                                     moved_count += 1
                             except Exception as e:
-                                log_event(f"move_error {image_path} {e}")
+                                log.error(f"move_error {image_path} {e}")
                                 failures.append(f"move_error:{image_path}")
                                 error_count += 1
 
                         processed += 1
 
                     except Exception as e:
-                        log_event(f"process_error {image_path} {e}")
+                        log.exception(f"Unhandled error processing {image_path}")
                         failures.append(f"process_error:{image_path}")
                         error_count += 1
 
@@ -838,14 +845,14 @@ class BlurDetectorGUI(tk.Tk):
                 "failures_sample": failures[:10],
                 "elapsed_seconds": round(elapsed_total, 2),
             }
-            log_event(f"run_complete dir={image_dir} processed={processed} moved={moved_count} errors={error_count} elapsed={elapsed_total:.2f}s")
+            log.info(f"run_complete dir={image_dir} processed={processed} moved={moved_count} errors={error_count} elapsed={elapsed_total:.2f}s")
             self.update_progress("Analysis complete (BETA scoring).")
             self._show_run_summary(summary)
 
         except Exception as e:
-            log_event(f"run_error dir={image_dir} error={e}")
+            log.exception(f"Critical error during analysis run for dir={image_dir}")
             self.update_progress(f"An error occurred: {e}")
-            messagebox.showerror("Analysis error", f"An unexpected error occurred:\n{e}")
+            messagebox.showerror("Analysis error", f"An unexpected error occurred:\\n{e}")
 
     def safe_move(self, image_path: str, target_subdir: str, dry_run: bool = False) -> bool:
         """
@@ -871,16 +878,16 @@ class BlurDetectorGUI(tk.Tk):
                 counter += 1
 
         if dry_run:
-            log_event(f"dry_move: {src} -> {dest}")
+            log.info(f"dry_move: {src} -> {dest}")
             return True
 
         # Attempt atomic move
         try:
             shutil.move(str(src), str(dest))
-            log_event(f"MOVED '{src}' -> '{dest}'")
+            log.info(f"MOVED '{src}' -> '{dest}'")
             return True
         except Exception as e:
-            log_event(f"move_failed {src} -> {dest} : {e}")
+            log.error(f"move_failed {src} -> {dest} : {e}")
             raise
 
     def _show_run_summary(self, summary: Dict[str, Any]):
@@ -928,7 +935,7 @@ class BlurDetectorGUI(tk.Tk):
             )
         except Exception:
             # Defensive: ignore UI insertion errors but log them
-            log_event(f"ui_insert_error {row.get('path')}")
+            log.warning(f"ui_insert_error {row.get('path')}")
 
     def on_row_select(self, event):
         sel = self.tree.selection()
