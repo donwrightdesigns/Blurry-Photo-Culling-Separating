@@ -112,10 +112,176 @@ class BlurDetectorGUI(tk.Tk):
         # Show warning if ExifTool is not available
         if not EXIFTOOL_AVAILABLE:
             self.after(500, self._show_exiftool_warning)
+            
+        # For logging from other threads
+        self._log_handler: Optional[GUILoggingHandler] = None
+
+    def get_metric_weights(self) -> Dict[str, float]:
+        return {
+            "blur": 0.40,
+            "composition": 0.30,
+            "lighting": 0.20,
+            "noise": 0.10,
+            "exposure": 0.20,
+        }
+
+    def recalc_quality_scores(self, *args):
+        """
+        Re-calculate Quality scores based on currently enabled checkboxes.
+        Update Treeview columns (hide disabled metrics with '-').
+        """
+        # 1. Determine enabled metrics
+        enabled_metrics = []
+        if self.use_blur.get(): enabled_metrics.append("blur")
+        if self.use_composition.get(): enabled_metrics.append("composition")
+        if self.use_lighting.get(): 
+            enabled_metrics.append("lighting")
+            enabled_metrics.append("exposure")
+        if self.use_noise.get(): enabled_metrics.append("noise")
+        
+        # Fallback if nothing selected (though UI should probably prevent this, 
+        # but let's just say if nothing selected, Q=0 or we force Blur)
+        if not enabled_metrics:
+            enabled_metrics = ["blur"] # Default fallback
+
+        weights = self.get_metric_weights()
+
+        # 2. Iterate results and update
+        for row in self.results:
+            # Reconstruct metric_scores dict from row data
+            metric_scores = {
+                "blur": row.get("blur"),
+                "composition": row.get("comp"),
+                "lighting": row.get("light"),
+                "noise": row.get("noise"),
+                "exposure": row.get("exposure"),
+            }
+            
+            # Recalculate Q
+            q_score = quality_score(metric_scores, weights, enabled_metrics)
+            blurry_flag = row.get("blurry", False)
+            
+            # Update derived fields
+            row["quality"] = q_score
+            row["rating"] = rating_for_score(q_score, blurry_flag)
+            row["label"] = label_for_score(q_score, blurry_flag)
+            row["collection"] = collection_for_score(q_score, blurry_flag)
+
+            # Find item in Treeview (using path tag)
+            # This is O(N) search if we don't have a map. 
+            # But we can iterate tree children directly? 
+            # No, self.results order matches tree insertion order usually?
+            # Better to iterate tree children and find row?
+            # Or iterate results and find tree item?
+            # We used path as a tag.
+            pass 
+
+        # Efficient update: Iterate tree items, find corresponding row
+        for item_id in self.tree.get_children():
+            path_tag = self.tree.item(item_id)["tags"][0]
+            row = next((r for r in self.results if r["path"] == path_tag), None)
+            if not row: continue
+            
+            # Prepare display values
+            # If metric is NOT enabled, show "-"
+            def fmt(val, enabled_key):
+                if enabled_key == "lighting": # lighting implies exposure too
+                     if not self.use_lighting.get(): return "-"
+                elif enabled_key == "blur" and not self.use_blur.get(): return "-"
+                elif enabled_key == "composition" and not self.use_composition.get(): return "-"
+                elif enabled_key == "noise" and not self.use_noise.get(): return "-"
+                
+                if val is None: return "-"
+                return f"{val:.1f}"
+
+            # Update row values
+            self.tree.item(item_id, values=(
+                pathlib.Path(row["path"]).name,
+                f"{row['quality']:.1f}",
+                fmt(row.get('blur'), "blur"),
+                fmt(row.get('comp'), "composition"),
+                fmt(row.get('light'), "lighting"),
+                fmt(row.get('noise'), "noise"),
+                row["rating"],
+                row["label"],
+                row["collection"],
+            ))
+        
+        # 3. Re-color
+        self.update_filters()
+
+    def sort_tree(self, col, reverse):
+        """Sort treeview contents by a given column."""
+        l = [(self.tree.set(k, col), k) for k in self.tree.get_children("")]
+        
+        # specific handling for numeric columns
+        try:
+            l.sort(key=lambda t: float(t[0]) if t[0] != "-" else -1.0, reverse=reverse)
+        except ValueError:
+            l.sort(key=lambda t: t[0], reverse=reverse)
+
+        for index, (val, k) in enumerate(l):
+            self.tree.move(k, "", index)
+
+        # Toggle sort direction for next click
+        self.tree.heading(col, command=lambda: self.sort_tree(col, not reverse))
+
+    def update_filters(self, *args):
+        """
+        Apply current threshold values to color-code the results table.
+        This is safe to call even if results aren't populated yet.
+        """
+        reject_cut = self.reject_threshold.get()
+        review_cut = self.review_threshold.get()
+
+        for item_id in self.tree.get_children():
+            # The full path is stored in the first tag
+            path_tag = self.tree.item(item_id)["tags"][0]
+            
+            # Find the corresponding result row
+            row = next((r for r in self.results if r["path"] == path_tag), None)
+            if not row:
+                continue
+
+            # Clear existing tags before applying new ones
+            self.tree.item(item_id, tags=(path_tag,))
+
+            q_score = row.get("quality", 0.0)
+            blurry_flag = row.get("blurry", False)
+
+            if q_score < reject_cut or blurry_flag:
+                self.tree.item(item_id, tags=(path_tag, 'reject'))
+            elif q_score < review_cut:
+                self.tree.item(item_id, tags=(path_tag, 'review'))
+            else:
+                self.tree.item(item_id, tags=(path_tag, 'keeper'))
     
+        self.update_stats()
+
+    def update_stats(self):
+        """Update a label with counts of rejects, review, keepers."""
+        reject_cut = self.reject_threshold.get()
+        review_cut = self.review_threshold.get()
+        
+        rejects = 0
+        reviews = 0
+        keepers = 0
+        
+        for row in self.results:
+            q = row['quality']
+            blurry = row.get('blurry', False)
+            if q < reject_cut or blurry:
+                rejects += 1
+            elif q < review_cut:
+                reviews += 1
+            else:
+                keepers += 1
+        
+        self.stats_var.set(f"Stats: {rejects} Rejects | {reviews} Review | {keepers} Keepers")
+
     def _init_logging(self):
         """Initialize the logger with the GUI widget."""
-        setup_logging(gui_log_widget=self.log_widget, level=logging.INFO)
+        self._log_handler = setup_logging(gui_log_widget=self.log_widget, level=logging.INFO)
     
     def _show_exiftool_warning(self):
         """Show warning dialog if ExifTool is not installed."""
@@ -176,14 +342,18 @@ class BlurDetectorGUI(tk.Tk):
         ttk.Button(thresh_frame, text="Pre-scan", command=self.start_prescan).pack(side=tk.LEFT, padx=(0,10))
 
         # Reject slider
-        ttk.Label(thresh_frame, text="Reject <").pack(side=tk.LEFT)
+        ttk.Label(thresh_frame, text="Reject (Red) <").pack(side=tk.LEFT)
         ttk.Scale(thresh_frame, from_=0, to=100, variable=self.reject_threshold, orient=tk.HORIZONTAL, command=self.update_filters).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Label(thresh_frame, textvariable=self.reject_threshold, width=5).pack(side=tk.LEFT)
 
         # Review slider
-        ttk.Label(thresh_frame, text="Review <", style="Review.TLabel").pack(side=tk.LEFT, padx=(15,0))
+        ttk.Label(thresh_frame, text="Review (Yellow) <", style="Review.TLabel").pack(side=tk.LEFT, padx=(15,0))
         ttk.Scale(thresh_frame, from_=0, to=100, variable=self.review_threshold, orient=tk.HORIZONTAL, command=self.update_filters).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Label(thresh_frame, textvariable=self.review_threshold, width=5).pack(side=tk.LEFT)
+        
+        # Live Stats Label
+        self.stats_var = tk.StringVar(value="Stats: -")
+        ttk.Label(thresh_frame, textvariable=self.stats_var, font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(20, 0))
         
         # --- File Operations ---
         move_frame = ttk.Frame(left_col)
@@ -199,10 +369,10 @@ class BlurDetectorGUI(tk.Tk):
         metrics_frame = ttk.Frame(left_col)
         metrics_frame.grid(row=2, column=0, columnspan=7, sticky=tk.W)
         
-        ttk.Checkbutton(metrics_frame, text="Use Blur", variable=self.use_blur).pack(side=tk.LEFT)
-        ttk.Checkbutton(metrics_frame, text="Use Composition", variable=self.use_composition).pack(side=tk.LEFT, padx=10)
-        ttk.Checkbutton(metrics_frame, text="Use Lighting", variable=self.use_lighting).pack(side=tk.LEFT)
-        ttk.Checkbutton(metrics_frame, text="Use Noise", variable=self.use_noise).pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(metrics_frame, text="Score: Blur", variable=self.use_blur, command=self.recalc_quality_scores).pack(side=tk.LEFT)
+        ttk.Checkbutton(metrics_frame, text="Score: Composition", variable=self.use_composition, command=self.recalc_quality_scores).pack(side=tk.LEFT, padx=10)
+        ttk.Checkbutton(metrics_frame, text="Score: Lighting", variable=self.use_lighting, command=self.recalc_quality_scores).pack(side=tk.LEFT)
+        ttk.Checkbutton(metrics_frame, text="Score: Noise", variable=self.use_noise, command=self.recalc_quality_scores).pack(side=tk.LEFT, padx=10)
 
         xmp_frame = ttk.Frame(left_col)
         xmp_frame.grid(row=3, column=0, columnspan=7, sticky=tk.W, pady=6)
@@ -255,7 +425,7 @@ class BlurDetectorGUI(tk.Tk):
             "collection": "Collection",
         }
         for col, text in headings.items():
-            self.tree.heading(col, text=text)
+            self.tree.heading(col, text=text, command=lambda c=col: self.sort_tree(c, False))
             self.tree.column(col, width=120 if col != "file" else 380, anchor=tk.W)
         
         # Configure tags for color-coding rows
@@ -522,6 +692,22 @@ class BlurDetectorGUI(tk.Tk):
                         "median_iso": median_iso,
                     }
 
+            # Compute ISO distribution (global)
+            iso_counts = {"Low (<=400)": 0, "Med (400-3200)": 0, "High (>=3200)": 0, "Unknown": 0}
+            for cam_list in per_camera.values():
+                for item in cam_list:
+                    iso_val = item.get("iso")
+                    try:
+                        iso_num = float(iso_val)
+                        if iso_num <= 400:
+                            iso_counts["Low (<=400)"] += 1
+                        elif iso_num < 3200:
+                            iso_counts["Med (400-3200)"] += 1
+                        else:
+                            iso_counts["High (>=3200)"] += 1
+                    except (ValueError, TypeError):
+                        iso_counts["Unknown"] += 1
+
             # Store results
             self._prescan_results = {
                 "total_images": total,
@@ -531,6 +717,7 @@ class BlurDetectorGUI(tk.Tk):
                 "time_span_hours": round(duration_hours, 1) if duration_hours else None,
                 "images_per_hour": round(images_per_hour) if images_per_hour else None,
                 "cameras": camera_summary,
+                "iso_stats": iso_counts,
                 "q10": round(q10, 1),
                 "q25": round(q25, 1),
                 "q50": round(q50, 1),
@@ -636,11 +823,23 @@ class BlurDetectorGUI(tk.Tk):
         if r.get("time_span_hours") and r.get("images_per_hour"):
             time_text = f"Time span: {r['time_span_hours']:.1f} hours  |  Images/hour: ~{r['images_per_hour']}\n"
 
+        iso_text = ""
+        iso_stats = r.get("iso_stats")
+        if iso_stats:
+            parts = []
+            # Order matters for display
+            for k in ["Low (<=400)", "Med (400-3200)", "High (>=3200)", "Unknown"]:
+                if iso_stats.get(k, 0) > 0:
+                    parts.append(f"{k}: {iso_stats[k]}")
+            if parts:
+                iso_text = "ISO Stats: " + " | ".join(parts) + "\n"
+
         msg = (
             f"PRE-SCAN SUMMARY (sampled {r['sample_count']} images)\n\n"
             f"Total images: {r['total_images']}\n"
             f"With EXIF: {r['with_exif']}  |  Without EXIF: {r['without_exif']}\n"
             f"{time_text}"
+            f"{iso_text}"
             f"\nCameras detected: {n_cameras}\n{cam_text}\n"
             f"\nQuality distribution (this shoot):\n"
             f"  10th percentile: {r['q10']}\n"
@@ -853,13 +1052,55 @@ class BlurDetectorGUI(tk.Tk):
                         failures.append(f"process_error:{image_path}")
                         error_count += 1
 
-                        # After main analysis, apply initial filter view
-                        self.update_filters()
-                        
-                    except Exception as e:
-                        log.exception(f"Unhandled error processing {image_path}")
+                    # Update ETA after each image
+                    t1 = time.time()
+                    img_time = t1 - t0
+                    if avg_time is None:
+                        avg_time = img_time
+                    else:
+                        avg_time = alpha * img_time + (1 - alpha) * avg_time
+                    
+                    remaining = total - idx
+                    if avg_time and avg_time > 0.01:
+                        eta_seconds = remaining * avg_time
+                        self.update_progress(f"[{idx}/{total}] ETA: {self._format_seconds(eta_seconds)} | {pathlib.Path(image_path).name}")
+
+                # After inner loop (chunk)
+                if pause_secs > 0 and chunk_start + chunk_size < total:
+                    if self._stop_requested.is_set():
+                        break
+                    self.update_progress(f"Pausing for {pause_secs:.1f}s...")
+                    time.sleep(pause_secs)
+
+            # --- Main loop finished ---
+            end_time = time.time()
+            elapsed = end_time - start_time
+            
+            summary = {
+                "processed": processed,
+                "moved": moved_count,
+                "errors": error_count,
+                "elapsed_seconds": elapsed,
+                "failures_sample": failures[:10],
+            }
+            
+            log.info(f"run_complete processed={processed} moved={moved_count} errors={error_count} elapsed={elapsed:.1f}s")
+            
+            self.after(0, lambda: self._show_run_summary(summary))
+
+            if self._stop_requested.is_set():
+                self.update_progress("Analysis stopped by user.")
+            else:
+                self.update_progress("Analysis complete.")
+            
+            # Update stats label with final counts
+            self.update_stats()
+
+        except Exception as e:
+            log.exception(f"Critical error during analysis for dir={image_dir}")
             self.update_progress(f"An error occurred: {e}")
             messagebox.showerror("Analysis error", f"An unexpected error occurred:\\n{e}")
+
 
     def safe_move(self, image_path: str, target_subdir: str, dry_run: bool = False) -> bool:
         """
@@ -980,6 +1221,42 @@ class BlurDetectorGUI(tk.Tk):
             return f"{m}m{s:02d}s"
         h, m = divmod(m, 60)
         return f"{h}h{m:02d}m"
+
+class GUILoggingHandler(logging.Handler):
+    def __init__(self, widget):
+        super().__init__()
+        self.widget = widget
+        self.widget.configure(state='disabled')
+
+    def emit(self, record):
+        self.widget.configure(state='normal')
+        self.widget.insert(tk.END, self.format(record) + '\\n')
+        self.widget.configure(state='disabled')
+        self.widget.see(tk.END)
+
+def setup_logging(gui_log_widget: scrolledtext.ScrolledText, level: int = logging.INFO) -> GUILoggingHandler:
+    log_file = pathlib.Path(__file__).parent / "pro-cull-gui.log"
+    
+    # Configure root logger
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler(log_file, mode='a', encoding='utf-8'),
+            logging.StreamHandler()
+        ]
+    )
+    
+    # Create GUI handler and add to root logger
+    gui_handler = GUILoggingHandler(gui_log_widget)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
+    gui_handler.setFormatter(formatter)
+    logging.getLogger().addHandler(gui_handler)
+    
+    log.info("="*50)
+    log.info("PRO-CULL GUI session started.")
+    
+    return gui_handler
 
 if __name__ == "__main__":
     app = BlurDetectorGUI()
